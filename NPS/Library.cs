@@ -126,9 +126,13 @@ namespace NPS
                             LibraryItem library = new LibraryItem();
                             library.itm = itm;
                             library.path = s;
-                            if (Directory.Exists(Path.Combine(Settings.Instance.downloadDir, "addcont")))
+                            if (Directory.Exists(Path.Combine(Settings.Instance.downloadDir, "addcont", itm.TitleId)))
                             {
-                                library.dlcPath = Path.Combine(Settings.Instance.downloadDir, "addcont");
+                                library.dlcPath = Path.Combine(Settings.Instance.downloadDir, "addcont", itm.TitleId);
+                            }
+                            if (Directory.Exists(Path.Combine(Settings.Instance.downloadDir, "patch", itm.TitleId)))
+                            {
+                                library.patchPath = Path.Combine(Settings.Instance.downloadDir, "patch", itm.TitleId);
                             }
                             library.isPkg = false;
                             lvi.Tag = library;
@@ -230,6 +234,7 @@ namespace NPS
             remoteLib.Clear();
             string appDir = Path.Combine(comboBox1.Text, "app");
             string dlcDir = Path.Combine(comboBox1.Text, "addcont");
+            string patchDir = Path.Combine(comboBox1.Text, "patch");
             DirectoryInfo di = new DirectoryInfo(appDir);
             if (!di.Exists)
             {
@@ -245,6 +250,7 @@ namespace NPS
                     if (itm.TitleId == folder)
                     {
                         DirectoryInfo dlcDi = new DirectoryInfo(Path.Combine(dlcDir, itm.TitleId));
+                        DirectoryInfo patchDi = new DirectoryInfo(Path.Combine(patchDir, itm.TitleId));
                         ListViewItem lvi = new ListViewItem($"({itm.Region}) {itm.TitleName}");
                         listView2.Items.Add(lvi);
 
@@ -261,6 +267,11 @@ namespace NPS
                         if (dlcDi.Exists)
                         {
                             library.dlcPath = dlcDi.FullName;
+                        }
+
+                        if (patchDi.Exists)
+                        {
+                            library.patchPath = patchDi.FullName;
                         }
                         library.isPkg = false;
                         lvi.Tag = library;
@@ -410,6 +421,11 @@ namespace NPS
                     DirectoryInfo dlcDi = new DirectoryInfo(li.dlcPath);
                     dlcDi.Delete(true);
                 }
+                if (!string.IsNullOrEmpty(li.patchPath))
+                {
+                    DirectoryInfo patchDi = new DirectoryInfo(li.patchPath);
+                    patchDi.Delete(true);
+                }
                 UpdateRemoteDirectory();
             }
         }
@@ -421,8 +437,6 @@ namespace NPS
 
         private void Btn_sync_Click(object sender, EventArgs e)
         {
-            string appDir = Path.Combine(comboBox1.Text, "app");
-            string dlcDir = Path.Combine(comboBox1.Text, "addcont");
             List<LibraryItem> itemToSync = new List<LibraryItem>();
             foreach (LibraryItem libraryItem in localLib)
             {
@@ -433,6 +447,18 @@ namespace NPS
                 }
             }
 
+            HandleFiles(itemToSync);
+        }
+
+        private void Btn_sync_selected_Click(object sender, EventArgs e)
+        {
+            if (listView1.SelectedItems.Count == 0) return;
+            LibraryItem libItem = (listView1.SelectedItems[0].Tag as LibraryItem);
+            HandleFiles(new List<LibraryItem>(new[] { libItem }));
+        }
+
+        private void HandleFiles(List<LibraryItem> itemToSync)
+        {
             if (itemToSync.Count == 0)
             {
                 MessageBox.Show("Nothing to sync.", "Sync", MessageBoxButtons.OK, MessageBoxIcon.Information, MessageBoxDefaultButton.Button1);
@@ -449,29 +475,39 @@ namespace NPS
             {
                 foreach (LibraryItem libraryItem in itemToSync)
                 {
-                    try
-                    {
-                        FileSystem.CopyDirectory(libraryItem.path, Path.Combine(appDir, libraryItem.itm.TitleId), UIOption.AllDialogs);
-                    }
-                    catch (Exception exception)
-                    {
-                        MessageBox.Show(exception.Message, "CopyFile", MessageBoxButtons.OK, MessageBoxIcon.Error,
-                            MessageBoxDefaultButton.Button1);
-                    }
-                    if (!string.IsNullOrEmpty(libraryItem.dlcPath))
-                    {
-                        try
-                        {
-                            FileSystem.CopyDirectory(libraryItem.dlcPath, Path.Combine(dlcDir, libraryItem.itm.TitleId), UIOption.AllDialogs);
-                        }
-                        catch (Exception exception)
-                        {
-                            MessageBox.Show(exception.Message, "CopyFile", MessageBoxButtons.OK, MessageBoxIcon.Error,
-                                MessageBoxDefaultButton.Button1);
-                        }
-                    }
+                    TransferFile(libraryItem);
                 }
                 UpdateRemoteDirectory();
+            }
+
+        }
+        private void TransferFile(LibraryItem from)
+        {
+            string appDir = Path.Combine(comboBox1.Text, "app");
+            string dlcDir = Path.Combine(comboBox1.Text, "addcont");
+            string patchDir = Path.Combine(comboBox1.Text, "patch");
+            LibraryItem libraryItem = from;
+            string gameAppDir = Path.Combine(appDir, libraryItem.itm.TitleId);
+            string gameDlcDir = Path.Combine(dlcDir, libraryItem.itm.TitleId);
+            string gamePatchDir = Path.Combine(patchDir, libraryItem.itm.TitleId);
+            try
+            {
+                FileSystem.CopyDirectory(libraryItem.path, gameAppDir, UIOption.AllDialogs);
+                if (!string.IsNullOrEmpty(libraryItem.dlcPath))
+                    FileSystem.CopyDirectory(libraryItem.dlcPath, gameDlcDir, UIOption.AllDialogs);
+                if (!string.IsNullOrEmpty(libraryItem.patchPath))
+                    FileSystem.CopyDirectory(libraryItem.patchPath, gamePatchDir, UIOption.AllDialogs);
+            }
+            catch (Exception exception)
+            {
+                if (Directory.Exists(gameAppDir))
+                    FileSystem.DeleteDirectory(gameAppDir, UIOption.AllDialogs, RecycleOption.DeletePermanently);
+                if (Directory.Exists(gameDlcDir))
+                    FileSystem.DeleteDirectory(gameDlcDir, UIOption.AllDialogs, RecycleOption.DeletePermanently);
+                if (Directory.Exists(gamePatchDir))
+                    FileSystem.DeleteDirectory(gamePatchDir, UIOption.AllDialogs, RecycleOption.DeletePermanently);
+                MessageBox.Show(exception.Message, "CopyFile", MessageBoxButtons.OK, MessageBoxIcon.Error,
+                    MessageBoxDefaultButton.Button1);
             }
         }
     }
@@ -482,5 +518,6 @@ namespace NPS
         public bool isPkg = false;
         public string path;
         public string dlcPath;
+        public string patchPath;
     }
 }
