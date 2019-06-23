@@ -12,12 +12,14 @@ using System.Net;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Microsoft.VisualBasic.FileIO;
 
 namespace NPS
 {
     public partial class Library : Form
     {
-
+        List<LibraryItem> localLib = new List<LibraryItem>();
+        List<LibraryItem> remoteLib = new List<LibraryItem>();
         List<Item> db;
 
         public Library(List<Item> db)
@@ -29,6 +31,8 @@ namespace NPS
         private void Library_Load(object sender, EventArgs e)
         {
             listView1.Items.Clear();
+            listView2.Items.Clear();
+            localLib.Clear();
 
             label1.Text = Settings.Instance.downloadDir;
 
@@ -63,7 +67,7 @@ namespace NPS
                 {
                     if (f.Equals(itm.DownloadFileName))
                     {
-                        ListViewItem lvi = new ListViewItem(itm.TitleName + " (PKG)");
+                        ListViewItem lvi = new ListViewItem(itm.TitleName + " (PKG)" + " [" + itm.TitleId + "]");
 
                         listView1.Items.Add(lvi);
 
@@ -105,9 +109,10 @@ namespace NPS
                 foreach (var itm in db)
                 {
                     if (!itm.IsDLC)
+                    {
                         if (itm.TitleId.Equals(d))
                         {
-                            ListViewItem lvi = new ListViewItem(itm.TitleName);
+                            ListViewItem lvi = new ListViewItem($"({itm.Region}) {itm.TitleName}");
 
                             listView1.Items.Add(lvi);
 
@@ -121,11 +126,17 @@ namespace NPS
                             LibraryItem library = new LibraryItem();
                             library.itm = itm;
                             library.path = s;
+                            if (Directory.Exists(Path.Combine(Settings.Instance.downloadDir, "addcont")))
+                            {
+                                library.dlcPath = Path.Combine(Settings.Instance.downloadDir, "addcont");
+                            }
                             library.isPkg = false;
                             lvi.Tag = library;
                             found = true;
+                            localLib.Add(library);
                             break;
                         }
+                    }
                 }
 
                 if (!found)
@@ -193,8 +204,96 @@ namespace NPS
 
 
             });
+            SetupRemoteDirectory();
+            UpdateRemoteDirectory();
+        }
 
+        void SetupRemoteDirectory()
+        {
+            comboBox1.Items.Clear();
+            IList<DriveInfo> driveList = DriveInfo.GetDrives().Where(d => d.DriveType == DriveType.Removable).ToList();
+            foreach (DriveInfo driveInfo in driveList)
+            {
+                comboBox1.Items.Add(driveInfo.RootDirectory.ToString());
+            }
 
+            if (comboBox1.Items.Count > 0)
+            {
+                comboBox1.SelectedIndex = 0;
+            }
+        }
+
+        void UpdateRemoteDirectory()
+        {
+            if (string.IsNullOrEmpty(comboBox1.Text)) return;
+            listView2.Items.Clear();
+            remoteLib.Clear();
+            string appDir = Path.Combine(comboBox1.Text, "app");
+            string dlcDir = Path.Combine(comboBox1.Text, "addcont");
+            DirectoryInfo di = new DirectoryInfo(appDir);
+            if (!di.Exists)
+            {
+                return;
+            }
+            List<string> imagesToLoad = new List<string>();
+            foreach (DirectoryInfo directoryInfo in di.GetDirectories())
+            {
+                string folder = directoryInfo.Name;
+                foreach (Item itm in db)
+                {
+                    if (itm.IsDLC) continue;
+                    if (itm.TitleId == folder)
+                    {
+                        DirectoryInfo dlcDi = new DirectoryInfo(Path.Combine(dlcDir, itm.TitleId));
+                        ListViewItem lvi = new ListViewItem($"({itm.Region}) {itm.TitleName}");
+                        listView2.Items.Add(lvi);
+
+                        foreach (var r in NPCache.I.renasceneCache)
+                            if (itm.Equals(r.itm))
+                            {
+                                imagesToLoad.Add(r.imgUrl);
+                                lvi.ImageKey = r.imgUrl;
+                                break;
+                            }
+                        LibraryItem library = new LibraryItem();
+                        library.itm = itm;
+                        library.path = directoryInfo.FullName;
+                        if (dlcDi.Exists)
+                        {
+                            library.dlcPath = dlcDi.FullName;
+                        }
+                        library.isPkg = false;
+                        lvi.Tag = library;
+                        remoteLib.Add(library);
+                        break;
+                    }
+                }
+
+            }
+            Task.Run(() =>
+            {
+                foreach (string url in imagesToLoad)
+                {
+                    WebClient wc = new WebClient();
+                    wc.Proxy = Settings.Instance.proxy;
+                    wc.Encoding = Encoding.UTF8;
+                    var img = wc.DownloadData(url);
+                    using (var ms = new MemoryStream(img))
+                    {
+                        Image image = Image.FromStream(ms);
+                        image = getThumb(image);
+                        Invoke(new Action(() =>
+                        {
+                            imageList1.Images.Add(url, image);
+                        }));
+                    }
+                }
+            });
+        }
+
+        private void ComboBox1_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            UpdateRemoteDirectory();
         }
 
         public Bitmap getThumb(Image image)
@@ -283,6 +382,98 @@ namespace NPS
         {
             Library_Load(null, null);
         }
+
+        private void Btn_remoteList_refresh_Click(object sender, EventArgs e)
+        {
+            SetupRemoteDirectory();
+        }
+
+        private void Btn_remote_opendir_Click(object sender, EventArgs e)
+        {
+            if (listView2.SelectedItems.Count == 0) return;
+            string path = (listView2.SelectedItems[0].Tag as LibraryItem).path;
+            System.Diagnostics.Process.Start("explorer.exe", "/select, " + path);
+        }
+
+        private void Btn_remote_delete_Click(object sender, EventArgs e)
+        {
+            if (listView2.SelectedItems.Count == 0) return;
+            LibraryItem li = (listView2.SelectedItems[0].Tag as LibraryItem);
+            DialogResult result = MessageBox.Show($"Are you sure you want to delete {li.itm.TitleName} in remote?"
+                , "Delete?", MessageBoxButtons.YesNo, MessageBoxIcon.Exclamation, MessageBoxDefaultButton.Button2);
+            if (result == DialogResult.Yes)
+            {
+                DirectoryInfo di = new DirectoryInfo(li.path);
+                di.Delete(true);
+                if (!string.IsNullOrEmpty(li.dlcPath))
+                {
+                    DirectoryInfo dlcDi = new DirectoryInfo(li.dlcPath);
+                    dlcDi.Delete(true);
+                }
+                UpdateRemoteDirectory();
+            }
+        }
+
+        private void Btn_remote_refresh_Click(object sender, EventArgs e)
+        {
+            Library_Load(null, null);
+        }
+
+        private void Btn_sync_Click(object sender, EventArgs e)
+        {
+            string appDir = Path.Combine(comboBox1.Text, "app");
+            string dlcDir = Path.Combine(comboBox1.Text, "addcont");
+            List<LibraryItem> itemToSync = new List<LibraryItem>();
+            foreach (LibraryItem libraryItem in localLib)
+            {
+                var item = remoteLib.SingleOrDefault(x => x.itm.TitleId == libraryItem.itm.TitleId && !x.itm.IsDLC);
+                if (item == null)
+                {
+                    itemToSync.Add(libraryItem);
+                }
+            }
+
+            if (itemToSync.Count == 0)
+            {
+                MessageBox.Show("Nothing to sync.", "Sync", MessageBoxButtons.OK, MessageBoxIcon.Information, MessageBoxDefaultButton.Button1);
+                return;
+            }
+
+            string msg = "The following game & dlc will sync. Continue?\n";
+            foreach (LibraryItem libraryItem in itemToSync)
+            {
+                msg += $"({libraryItem.itm.Region}) {libraryItem.itm.TitleName}\n";
+            }
+            DialogResult result = MessageBox.Show(msg, "Sync", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button1);
+            if (result == DialogResult.Yes)
+            {
+                foreach (LibraryItem libraryItem in itemToSync)
+                {
+                    try
+                    {
+                        FileSystem.CopyDirectory(libraryItem.path, Path.Combine(appDir, libraryItem.itm.TitleId), UIOption.AllDialogs);
+                    }
+                    catch (Exception exception)
+                    {
+                        MessageBox.Show(exception.Message, "CopyFile", MessageBoxButtons.OK, MessageBoxIcon.Error,
+                            MessageBoxDefaultButton.Button1);
+                    }
+                    if (!string.IsNullOrEmpty(libraryItem.dlcPath))
+                    {
+                        try
+                        {
+                            FileSystem.CopyDirectory(libraryItem.dlcPath, Path.Combine(dlcDir, libraryItem.itm.TitleId), UIOption.AllDialogs);
+                        }
+                        catch (Exception exception)
+                        {
+                            MessageBox.Show(exception.Message, "CopyFile", MessageBoxButtons.OK, MessageBoxIcon.Error,
+                                MessageBoxDefaultButton.Button1);
+                        }
+                    }
+                }
+                UpdateRemoteDirectory();
+            }
+        }
     }
 
     class LibraryItem
@@ -290,5 +481,6 @@ namespace NPS
         public Item itm;
         public bool isPkg = false;
         public string path;
+        public string dlcPath;
     }
 }
